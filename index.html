@@ -1,0 +1,213 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wildfire Detection System</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Satellite AI Dashboard</p>
+        <h1>Wildfire Detection System</h1>
+      </div>
+      <button class="theme-toggle" type="button" id="themeToggle" aria-label="Toggle color theme">
+        <span class="theme-icon" aria-hidden="true">o</span>
+      </button>
+    </header>
+
+    {% if error %}
+      <section class="alert" role="alert">{{ error }}</section>
+    {% endif %}
+
+    {% if demo_mode %}
+      <section class="notice" role="status">
+        Running in demo mode because <code>model/wildfire_model.h5</code> is missing. Upload still works with heuristic predictions and heatmaps.
+      </section>
+    {% endif %}
+
+    <section class="feature-band" aria-labelledby="featuresHeading">
+      <div class="section-heading compact">
+        <p class="eyebrow">Dashboard</p>
+        <h2 id="featuresHeading">DASHBOARD FEATURES</h2>
+      </div>
+      <ul class="feature-list">
+        <li>Show prediction result visually</li>
+        <li>Show heatmap output</li>
+      </ul>
+      <p class="feature-optional">Optional: Multiple image upload, History of predictions</p>
+    </section>
+
+    <section class="workspace-grid">
+      <form class="upload-panel" method="post" action="{{ url_for('predict') }}" enctype="multipart/form-data">
+        <label class="drop-zone" id="dropZone" for="imageInput">
+          <input id="imageInput" name="images" type="file" accept=".png,.jpg,.jpeg,.bmp,.tif,.tiff" multiple required>
+          <span class="drop-icon" aria-hidden="true">^</span>
+          <span class="drop-title">Drop satellite image(s)</span>
+          <span class="drop-subtitle">PNG, JPG, BMP, TIF, TIFF</span>
+        </label>
+
+        <div class="preview-wrap multi-preview" id="previewWrap" {% if not uploaded_images and not uploaded_image %}hidden{% endif %}>
+          <div class="preview-list" id="previewList">
+            {% if uploaded_images %}
+              {% for image in uploaded_images %}
+                <img src="{{ image }}" alt="Uploaded satellite preview {{ loop.index }}">
+              {% endfor %}
+            {% elif uploaded_image %}
+              <img src="{{ uploaded_image }}" alt="Uploaded satellite preview">
+            {% endif %}
+          </div>
+        </div>
+
+        <button class="primary-button" type="submit">Run Detection</button>
+      </form>
+
+      <section class="result-panel" aria-live="polite">
+        {% if result %}
+          <div class="result-status {{ 'is-fire' if result.label == 'Fire' else 'is-clear' }}">
+            <span>{{ result.label }}</span>
+            <strong>{{ result.confidence }}%</strong>
+          </div>
+          <div class="metric-row">
+            <div>
+              <span>Fire probability</span>
+              <strong>{{ result.fire_probability }}%</strong>
+            </div>
+            <div>
+              <span>Confidence</span>
+              <strong>{{ result.confidence }}%</strong>
+            </div>
+          </div>
+        {% else %}
+          <div class="empty-state">
+            <span class="empty-mark">+</span>
+            <p>Awaiting satellite image</p>
+          </div>
+        {% endif %}
+      </section>
+    </section>
+
+    {% if results %}
+      <section class="batch-band">
+        <div class="section-heading">
+          <p class="eyebrow">Batch Inference</p>
+          <h2>Multiple Image Results</h2>
+        </div>
+        <div class="batch-grid">
+          {% for item in results %}
+            <article class="history-item">
+              <img src="{{ item.uploaded_image }}" alt="Result image {{ loop.index }}">
+              <div>
+                <strong>{{ item.filename }}: {{ item.label }}</strong>
+                <span>{{ item.confidence }}% confidence</span>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    {% if uploaded_image or heatmap_image %}
+      <section class="visual-grid">
+        {% if uploaded_image %}
+          <article class="visual-card">
+            <header>Uploaded Image</header>
+            <img src="{{ uploaded_image }}" alt="Uploaded satellite image">
+          </article>
+        {% endif %}
+        {% if heatmap_image %}
+          <article class="visual-card">
+            <header>Heatmap Output</header>
+            <img src="{{ heatmap_image }}" alt="Wildfire heatmap output">
+          </article>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    {% if history %}
+      <section class="history-band">
+        <div class="section-heading">
+          <p class="eyebrow">Recent Runs</p>
+          <h2>Prediction History</h2>
+        </div>
+        <div class="history-list">
+          {% for item in history %}
+            <article class="history-item">
+              <img src="{{ item.uploaded_image }}" alt="History uploaded image">
+              <div>
+                <strong>{{ item.label }}</strong>
+                <span>{{ item.confidence }}% confidence</span>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    const dropZone = document.getElementById("dropZone");
+    const imageInput = document.getElementById("imageInput");
+    const previewWrap = document.getElementById("previewWrap");
+    const previewList = document.getElementById("previewList");
+    const themeToggle = document.getElementById("themeToggle");
+
+    const savedTheme = localStorage.getItem("wildfire-theme");
+    if (savedTheme) {
+      document.documentElement.dataset.theme = savedTheme;
+    }
+
+    themeToggle.addEventListener("click", () => {
+      const current = document.documentElement.dataset.theme || "dark";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      localStorage.setItem("wildfire-theme", next);
+    });
+
+    function previewFiles(fileList) {
+      if (!fileList || fileList.length === 0) {
+        return;
+      }
+      previewList.innerHTML = "";
+      Array.from(fileList).slice(0, 8).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = event => {
+          const img = document.createElement("img");
+          img.src = event.target.result;
+          img.alt = `Preview ${file.name}`;
+          previewList.appendChild(img);
+        };
+        reader.readAsDataURL(file);
+      });
+      previewWrap.hidden = false;
+    }
+
+    imageInput.addEventListener("change", event => previewFiles(event.target.files));
+
+    ["dragenter", "dragover"].forEach(eventName => {
+      dropZone.addEventListener(eventName, event => {
+        event.preventDefault();
+        dropZone.classList.add("is-dragging");
+      });
+    });
+
+    ["dragleave", "drop"].forEach(eventName => {
+      dropZone.addEventListener(eventName, event => {
+        event.preventDefault();
+        dropZone.classList.remove("is-dragging");
+      });
+    });
+
+    dropZone.addEventListener("drop", event => {
+      const files = event.dataTransfer.files;
+      if (!files || files.length === 0) return;
+      const transfer = new DataTransfer();
+      Array.from(files).forEach(file => transfer.items.add(file));
+      imageInput.files = transfer.files;
+      previewFiles(files);
+    });
+  </script>
+</body>
+</html>

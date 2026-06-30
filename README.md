@@ -2,117 +2,296 @@
 
 Wildfire image classification project built with Flask and TensorFlow for detecting fire in satellite or aerial imagery. The application supports web-based inference, batch uploads, heatmap visualization, and a simple training pipeline for a custom CNN model.
 
-## Overview
+## 1) Project Objective
 
-This project is a binary image classification system that predicts whether an input image belongs to:
+Build an end-to-end binary classifier:
 
-- `Fire`
-- `No Fire`
+- Input: satellite image
+- Output: `Fire` or `No Fire`
+- Confidence + fire probability
+- Visual explanation heatmap
 
-The app is designed as a practical student or portfolio project rather than a full production wildfire monitoring platform. It combines:
+The system supports two prediction modes:
 
-- a custom CNN training pipeline
-- a Flask dashboard for image upload and prediction
-- heatmap generation for visual interpretation
-- a fallback demo mode when a trained model is not available
+- `trained_model`: uses `model/wildfire_model.h5`
+- `demo`: if model is missing, uses a heuristic fallback
 
-## Key Features
+## 2) Algorithms Used
 
-- Single-image and multi-image wildfire prediction
-- Heatmap output for visual explanation
-- Prediction confidence and fire probability
-- Prediction history in the dashboard
-- Drag-and-drop upload interface
-- Demo fallback mode if `model/wildfire_model.h5` is missing
-- Local training pipeline for a binary wildfire classifier
+### 2.1 Core ML Algorithm (Supervised Learning)
 
-## Model Summary
+- Problem type: Binary image classification
+- Model: Custom CNN (`wildfire_cnn`)
+- Loss: Binary Cross-Entropy
+- Optimizer: Adam (`LEARNING_RATE=0.001` by default)
+- Metrics: Accuracy, Precision, Recall
+- Decision threshold: `PREDICTION_THRESHOLD=0.5`
 
-The training code uses a custom convolutional neural network defined in `modeling.py`.
+### 2.2 CNN Architecture
 
-Architecture highlights:
+From `modeling.py` (`build_cnn_model`):
 
-- input size: `224 x 224 x 3`
-- data augmentation:
-  - random horizontal flip
-  - random rotation
-  - random zoom
-  - custom random brightness layer
-- convolution blocks:
-  - `Conv2D(32) + MaxPooling`
-  - `Conv2D(64) + MaxPooling`
-  - `Conv2D(128) + MaxPooling`
-- classification head:
-  - batch normalization
-  - flatten
-  - dropout
-  - dense layer with ReLU
-  - sigmoid output for binary prediction
+1. Data augmentation:
+   - Random horizontal flip
+   - Random rotation
+   - Random zoom
+   - Custom `RandomBrightness` layer
+2. Feature extraction:
+   - `Conv2D(32) + MaxPool`
+   - `Conv2D(64) + MaxPool`
+   - `Conv2D(128) + MaxPool`
+3. Classification head:
+   - BatchNormalization
+   - Flatten
+   - Dropout(0.5)
+   - Dense(128, ReLU)
+   - Dropout(0.3)
+   - Dense(1, Sigmoid)
 
-Training is configured with:
+### 2.3 Training Strategy
 
-- loss: binary cross-entropy
-- optimizer: Adam
-- metrics: accuracy, precision, recall
+From `train.py`:
 
-## Dataset
+- Data split: `80% train / 10% validation / 10% test`
+- Stratified split used when class counts allow
+- TensorFlow `tf.data` pipeline with map, batch, prefetch
+- Callbacks:
+  - EarlyStopping (`patience=5`, restore best weights)
+  - ModelCheckpoint (save best by validation loss)
 
-The repository contains two dataset-related folders, and they serve different purposes.
+### 2.4 Explainability Algorithm
 
-### 1. `dataset/` - training input folder
+From `predict.py`:
 
-This is the folder the training script reads by default.
+- Trained mode explanation: **Grad-CAM** on last convolution layer
+- Demo mode explanation: deterministic warm-color heatmap based on color cues
 
-Expected structure:
+### 2.5 Demo Fallback Heuristic (When No Model File)
+
+A weighted fire-likelihood score is computed from:
+
+- Warm-channel intensity (`R - 0.5G - 0.25B`)
+- HSV-based fire-color ratio
+- Ember ratio
+- Smoke-like low-saturation ratio
+- Brightness ratio
+
+Then score is clipped to `[0.02, 0.98]` and used as pseudo-probability.
+
+## 3) File-Wise Functionalities
+
+### 3.1 Core Python Files
+
+| File | Main Role | Key Functions / Classes |
+|---|---|---|
+| `config.py` | Central constants and paths | Dataset/model/static/log paths, hyperparameters, thresholds |
+| `train.py` | End-to-end model training | `collect_labeled_dataset`, `split_dataset`, `make_dataset`, `train`, `parse_args` |
+| `modeling.py` | CNN architecture and model loading | `RandomBrightness`, `build_cnn_model`, `load_trained_model` |
+| `evaluate.py` | Training/evaluation artifacts | `plot_training_curves`, `save_confusion_matrix`, `save_classification_report`, `evaluate_model` |
+| `predict.py` | Inference + heatmaps | `WildfirePredictor`, `generate_gradcam`, `generate_demo_heatmap`, `predict_image` |
+| `app.py` | Flask web app + routes | `index`, `predict`, `health`, lazy `get_predictor` loader |
+| `utils.py` | Shared utility layer | image validation, preprocessing, logging, history persistence, safe filenames |
+
+### 3.2 Frontend / UI Files
+
+| File | Role |
+|---|---|
+| `templates/index.html` | Upload form, result panels, batch results, artifacts, history, theme toggle |
+| `static/styles.css` | Responsive dashboard styling, dark/light theme, cards/grid/layout |
+
+### 3.3 Deployment / Environment Files
+
+| File | Role |
+|---|---|
+| `requirements.txt` | Python dependencies |
+| `Dockerfile` | Containerized deployment (Gunicorn + Flask) |
+| `.dockerignore` | Excludes transient files from Docker build context |
+| `.gitignore` | Excludes model files, logs, generated outputs, virtual env |
+
+### 3.4 Data / Artifacts / Support
+
+| Path | Role |
+|---|---|
+| `dataset/fire`, `dataset/no_fire` | Training classes |
+| `model/wildfire_model.h5` | Trained model output |
+| `static/uploads` | Uploaded image storage |
+| `static/outputs` | Heatmaps, graphs, report files, prediction history |
+| `logs/wildfire_app.log` | Runtime logs |
+| `notebooks/EDA.ipynb` | Exploratory notebook |
+
+## 4) Code Working Process (End-to-End Flow)
+
+### 4.1 Training Workflow
+
+1. Read class folders (`dataset/fire`, `dataset/no_fire`)
+2. Validate image integrity (corrupted files skipped)
+3. Split into train/val/test
+4. Build tf.data pipelines (resize to `224x224`, normalize to `[0,1]`)
+5. Build CNN (`build_cnn_model`)
+6. Train with early stopping + best-checkpoint saving
+7. Save final model at `model/wildfire_model.h5`
+8. Generate artifacts:
+   - `training_accuracy.png`
+   - `training_loss.png`
+   - `confusion_matrix.png`
+   - `classification_report.txt`
+
+### 4.2 Inference Workflow (CLI/Web)
+
+1. Load predictor (`WildfirePredictor`)
+2. If model exists: run CNN inference
+3. If model missing: switch to demo heuristic mode
+4. Compute final label using threshold (`>=0.5 => Fire`)
+5. Produce heatmap:
+   - Trained mode: Grad-CAM
+   - Demo mode: warm-color heatmap
+6. Return label, confidence, probability, mode, heatmap path
+
+### 4.3 Flask Web Workflow
+
+1. `GET /` loads dashboard, history, artifact images
+2. `POST /predict` accepts one/multiple images
+3. Validate extensions and save files with unique safe names
+4. Run predictor per file
+5. Append each result to history JSON
+6. Render result cards + heatmaps + training artifacts
+7. `GET /health` returns API health and model readiness
+
+## 5) How to Run (Complete)
+
+### 5.1 Prerequisites
+
+- Python 3.10+ recommended
+- `pip`
+
+### 5.2 Local Setup
+
+### Windows (PowerShell)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### macOS/Linux
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 5.3 Prepare Dataset
+
+Place data like:
 
 ```text
 dataset/
-|-- fire/
-`-- no_fire/
+  fire/
+    fire_001.jpg
+    ...
+  no_fire/
+    no_fire_001.jpg
+    ...
 ```
 
-Right now, this folder is mostly a starter layout:
+Important:
 
-- `dataset/fire/` contains `.gitkeep`
-- `dataset/no_fire/` contains `.gitkeep`
-- `dataset/README.md` explains the expected structure
+- Keep both classes populated
+- At least 10 valid images total are required by split logic
 
-That means the project is ready for training, but you still need to place your final binary training images into these folders before running `train.py`.
-## How the Project Works
+### 5.4 Train the Model
 
-### Training flow
+```bash
+python train.py
+```
 
-1. Read images from `dataset/fire` and `dataset/no_fire`
-2. Validate files and skip unreadable images
-3. Split data into:
-   - 80% train
-   - 10% validation
-   - 10% test
-4. Resize images to `224 x 224`
-5. Normalize pixel values to `[0, 1]`
-6. Train the CNN
-7. Save the trained model to `model/wildfire_model.h5`
+Optional arguments:
 
-### Inference flow
+```bash
+python train.py --dataset dataset --epochs 20 --batch-size 32 --model-path model/wildfire_model.h5
+```
 
-1. Upload one or more images
-2. Load the trained model if available
-3. If no trained model exists, switch to demo mode
-4. Predict `Fire` or `No Fire`
-5. Return:
-   - label
-   - confidence
-   - fire probability
-   - heatmap image
+### 5.5 Run the Web App
 
-### Heatmap behavior
+```bash
+python app.py
+```
 
-- In trained mode, the project uses Grad-CAM
-- In demo mode, the project generates a deterministic heatmap using warm-color cues
-
-## Project Structure
+Open in browser:
 
 ```text
+http://localhost:5000
+```
+
+Health check:
+
+```text
+http://localhost:5000/health
+```
+
+### 5.6 Run Single-Image Prediction (CLI)
+
+```bash
+python predict.py path/to/image.jpg
+```
+
+With custom model path:
+
+```bash
+python predict.py path/to/image.jpg --model-path model/wildfire_model.h5
+```
+
+### 5.7 Run with Docker
+
+Build:
+
+```bash
+docker build -t wildfire-app .
+```
+
+Run:
+
+```bash
+docker run -p 5000:5000 wildfire-app
+```
+
+Then open:
+
+```text
+http://localhost:5000
+```
+
+## 6) Runtime Outputs
+
+After use/training, key outputs include:
+
+- `model/wildfire_model.h5`
+- `static/outputs/training_accuracy.png`
+- `static/outputs/training_loss.png`
+- `static/outputs/confusion_matrix.png`
+- `static/outputs/classification_report.txt`
+- `static/outputs/prediction_history.json`
+- `static/outputs/gradcam_*.jpg` or `heatmap_demo_*.jpg`
+- `logs/wildfire_app.log`
+
+## 7) Error Handling and Troubleshooting
+
+- Unsupported upload format:
+  - Use `png`, `jpg`, `jpeg`, `bmp`, `tif`, `tiff`
+- Model file missing:
+  - App auto-switches to demo mode
+  - Train model with `python train.py` for real CNN predictions
+- Training errors from data:
+  - Ensure both class folders have valid images
+  - Remove corrupted files
+- Empty/weak results:
+  - Increase dataset size and class balance
+  - Train more epochs or tune threshold/hyperparameters
+
+```text
+### Project Structure
 wild/
 |-- app.py
 |-- config.py
@@ -145,70 +324,8 @@ wild/
 - TensorFlow / Keras
 - NumPy
 - OpenCV
-- Pillow
 - scikit-learn
 - Matplotlib
-
-## Installation
-
-### Windows PowerShell
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-### macOS / Linux
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Run the Web App
-
-```bash
-python app.py
-```
-
-Open:
-
-```text
-http://localhost:5000
-```
-
-Health endpoint:
-
-```text
-http://localhost:5000/health
-```
-
-## Train the Model
-
-Before training, add your final binary images to:
-
-- `dataset/fire`
-- `dataset/no_fire`
-
-Then run:
-
-```bash
-python train.py
-```
-
-Optional arguments:
-
-```bash
-python train.py --dataset dataset --epochs 20 --batch-size 32 --model-path model/wildfire_model.h5
-```
-
-## Run CLI Prediction
-
-```bash
-python predict.py path/to/image.jpg
-```
 
 ## Dashboard Output
 
@@ -227,19 +344,15 @@ The dashboard currently focuses on prediction workflow rather than training char
 
 <img width="1372" height="1147" alt="image" src="https://github.com/user-attachments/assets/fd7f6e8a-be82-4dab-966f-5d16662febfc" />
 
+## 8) Current Features
 
-
-## Demo Mode
-
-If `model/wildfire_model.h5` is missing, the app still runs in demo mode.
-
-In demo mode:
-
-- uploads still work
-- a heuristic score is used instead of CNN inference
-- heatmaps are still generated
-
-This is useful for UI demos, but it should not be treated as a real trained model result.
+- Prediction result visualization
+- Accuracy graph (static image)
+- Heatmap output
+- Multiple image upload
+- Prediction history
+- Health endpoint
+- Demo fallback mode
 
 ## Limitations
 
